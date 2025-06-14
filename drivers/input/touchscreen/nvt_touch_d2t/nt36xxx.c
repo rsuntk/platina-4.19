@@ -23,9 +23,8 @@
 #include <linux/irq.h>
 #include <linux/gpio.h>
 #include <linux/proc_fs.h>
-#include <linux/uaccess.h>
+#include <asm/uaccess.h>
 #include <linux/input/mt.h>
-#include <linux/slab.h>
 #include <linux/of_gpio.h>
 #include <linux/of_irq.h>
 #include <linux/slab.h>
@@ -85,9 +84,6 @@ static int fb_notifier_callback(struct notifier_block *self, unsigned long event
 static void nvt_ts_early_suspend(struct early_suspend *h);
 static void nvt_ts_late_resume(struct early_suspend *h);
 #endif
-#ifdef CONFIG_TOUCHSCREEN_COMMON
-#include <linux/input/tp_common.h>
-#endif
 
 #define INPUT_EVENT_START			0
 #define INPUT_EVENT_SENSITIVE_MODE_OFF		0
@@ -130,33 +126,6 @@ const uint16_t gesture_key_array[] = {
 	KEY_POWER,  /*GESTURE_SLIDE_LEFT*/
 	KEY_POWER,  /*GESTURE_SLIDE_RIGHT*/
 };
-
-#ifdef CONFIG_TOUCHSCREEN_COMMON
-static ssize_t double_tap_show(struct kobject *kobj,
-				struct kobj_attribute *attr, char *buf)
-{
-	return sprintf(buf, "%d\n", ts->gesture_enabled);
-}
-
-static ssize_t double_tap_store(struct kobject *kobj,
-				struct kobj_attribute *attr, const char *buf,
-				size_t count)
-{
-	int rc, val;
-
-	rc = kstrtoint(buf, 10, &val);
-	if (rc)
-		return -EINVAL;
-
-	ts->gesture_enabled = !!val;
-	return count;
-}
-
-static struct tp_common_ops double_tap_ops = {
-	.show = double_tap_show,
-	.store = double_tap_store
-};
-#endif
 #endif
 
 static uint8_t bTouchIsAwake;
@@ -171,33 +140,33 @@ return:
 int32_t CTP_I2C_READ(struct i2c_client *client, uint16_t address, uint8_t *buf, uint16_t len)
 {
 	struct i2c_msg msgs[2];
-	int32_t ret = -EIO;
-	int32_t retries;
-
-	char *dma = kmalloc(len, GFP_KERNEL | GFP_DMA);
-	memcpy(dma, buf, len);
-
+	int32_t ret = -1;
+	int32_t retries = 0;
 	msgs[0].flags = !I2C_M_RD;
 	msgs[0].addr  = address;
 	msgs[0].len   = 1;
-	msgs[0].buf   = dma;
-
+	msgs[0].buf   = &buf[0];
 	msgs[1].flags = I2C_M_RD;
 	msgs[1].addr  = address;
 	msgs[1].len   = len - 1;
-	msgs[1].buf   = dma + 1;
+	msgs[1].buf   = &buf[1];
 
-	for (retries = 0; retries < 5; retries++) {
+	while (retries < 5) {
 		ret = i2c_transfer(client->adapter, msgs, 2);
-		if (likely(ret == 2))
-			goto out;
+
+		if (ret == 2)
+			break;
+
+		retries++;
+		msleep(20);
+		NVT_ERR("error, retry=%d\n", retries);
 	}
 
-	NVT_ERR("i2c read error\n");
+	if (unlikely(retries == 5)) {
+		NVT_ERR("error, ret=%d\n", ret);
+		ret = -EIO;
+	}
 
-out:
-	memcpy(buf, dma, len);
-	kfree(dma);
 	return ret;
 }
 
@@ -211,27 +180,29 @@ return:
 int32_t CTP_I2C_WRITE(struct i2c_client *client, uint16_t address, uint8_t *buf, uint16_t len)
 {
 	struct i2c_msg msg;
-	int32_t ret = -EIO;
-	int32_t retries;
-
-	char *dma = kmalloc(len, GFP_KERNEL | GFP_DMA);
-	memcpy(dma, buf, len);
-
+	int32_t ret = -1;
+	int32_t retries = 0;
 	msg.flags = !I2C_M_RD;
 	msg.addr  = address;
 	msg.len   = len;
-	msg.buf   = dma;
+	msg.buf   = buf;
 
-	for (retries = 0; retries < 5; retries++) {
+	while (retries < 5) {
 		ret = i2c_transfer(client->adapter, &msg, 1);
-		if (likely(ret == 1))
-			goto out;
+
+		if (ret == 1)
+			break;
+
+		retries++;
+		msleep(20);
+		NVT_ERR("error, retry=%d\n", retries);
 	}
 
-	NVT_ERR("i2c write error\n");
+	if (unlikely(retries == 5)) {
+		NVT_ERR("error, ret=%d\n", ret);
+		ret = -EIO;
+	}
 
-out:
-	kfree(dma);
 	return ret;
 }
 
@@ -937,8 +908,8 @@ static const char *nvt_get_config(struct nvt_ts_data *ts)
 	int i;
 
 	for (i = 0; i < ts->config_array_size; i++) {
-		if (ts->lockdown_info[0] ==
-		     ts->config_array[i].tp_vendor)
+		if ((ts->lockdown_info[0] ==
+		     ts->config_array[i].tp_vendor))
 			break;
 	}
 
@@ -1230,33 +1201,33 @@ return:
 *******************************************************/
 static void nvt_ts_work_func(void)
 {
-	int32_t ret;
-	uint8_t point_data[POINT_DATA_LEN + 1] = { 0, };
-	uint32_t position;
-	uint32_t input_x;
-	uint32_t input_y;
-	uint32_t input_w;
-	uint32_t input_p;
-	uint8_t input_id;
+	int32_t ret = -1;
+	uint8_t point_data[POINT_DATA_LEN + 1] = {0};
+	uint32_t position = 0;
+	uint32_t input_x = 0;
+	uint32_t input_y = 0;
+	uint32_t input_w = 0;
+	uint32_t input_p = 0;
+	uint8_t input_id = 0;
 #if MT_PROTOCOL_B
 	uint8_t press_id[TOUCH_MAX_FINGER_NUM] = {0};
 #endif /* MT_PROTOCOL_B */
-	int32_t i;
-	int32_t finger_cnt;
+	int32_t i = 0;
+	int32_t finger_cnt = 0;
 	mutex_lock(&ts->lock);
 
 	if (ts->dev_pm_suspend) {
 		ret = wait_for_completion_timeout(&ts->dev_pm_suspend_completion, msecs_to_jiffies(500));
 		if (!ret) {
 			NVT_ERR("system(i2c) can't finished resuming procedure, skip it\n");
-			goto out;
+			goto XFER_ERROR;
 		}
 	}
 
 	ret = CTP_I2C_READ(ts->client, I2C_FW_Address, point_data, POINT_DATA_LEN + 1);
-	if (unlikely(ret < 0)) {
+	if (ret < 0) {
 		NVT_ERR("CTP_I2C_READ failed.(%d)\n", ret);
-		goto out;
+		goto XFER_ERROR;
 	}
 
 	/*
@@ -1270,16 +1241,17 @@ static void nvt_ts_work_func(void)
 
 	if (nvt_fw_recovery(point_data)) {
 		nvt_esd_check_enable(true);
-		goto out;
+		goto XFER_ERROR;
 	}
 
 #endif /* #if NVT_TOUCH_ESD_PROTECT */
 #if WAKEUP_GESTURE
 
-	if (unlikely(bTouchIsAwake == 0)) {
+	if (bTouchIsAwake == 0) {
 		input_id = (uint8_t)(point_data[1] >> 3);
 		nvt_ts_wakeup_gesture_report(input_id, point_data);
-		goto out;
+		mutex_unlock(&ts->lock);
+		return;
 	}
 
 #endif
@@ -1377,7 +1349,7 @@ static void nvt_ts_work_func(void)
 
 #endif
 	input_sync(ts->input_dev);
-out:
+XFER_ERROR:
 	mutex_unlock(&ts->lock);
 }
 
@@ -1390,7 +1362,7 @@ return:
 *******************************************************/
 static irqreturn_t nvt_ts_irq_handler(int32_t irq, void *dev_id)
 {
-	if (unlikely(bTouchIsAwake == 0)) {
+	if (bTouchIsAwake == 0) {
 		dev_dbg(&ts->client->dev, "%s gesture wakeup\n", __func__);
 	}
 	nvt_ts_work_func();
@@ -1782,7 +1754,6 @@ static struct attribute *nvt_attr_group[] = {
 	&dev_attr_panel_color.attr,
 	&dev_attr_panel_display.attr,
 	&dev_attr_grip_area.attr,
-	NULL,
 };
 
 static int grip_area_open(struct inode *inode, struct file *file)
@@ -1897,7 +1868,7 @@ static int32_t nvt_ts_probe(struct i2c_client *client, const struct i2c_device_i
 	nvt_get_fw_info();
 	mutex_unlock(&ts->lock);
 	/*---create workqueue---*/
-	nvt_wq = alloc_workqueue("nvt_wq", WQ_HIGHPRI, 0);
+	nvt_wq = create_workqueue("nvt_wq");
 
 	if (!nvt_wq) {
 		NVT_ERR("nvt_wq create workqueue failed\n");
@@ -1950,15 +1921,8 @@ static int32_t nvt_ts_probe(struct i2c_client *client, const struct i2c_device_i
 		input_set_capability(ts->input_dev, EV_KEY, gesture_key_array[retry]);
 	}
 
-#ifdef CONFIG_TOUCHSCREEN_COMMON
-	ret = tp_common_set_double_tap_ops(&double_tap_ops);
-	if (ret < 0) {
-		NVT_ERR("%s: Failed to create double_tap node err=%d\n",
-				__func__, ret);
-	}
 #endif
-#endif
-	scnprintf(ts->phys, strlen("input/ts"), "input/ts");
+	snprintf(ts->phys, strlen("input/ts"), "input/ts");
 	ts->input_dev->name = NVT_TS_NAME;
 	ts->input_dev->phys = ts->phys;
 	ts->input_dev->id.bustype = BUS_I2C;
@@ -1994,6 +1958,16 @@ static int32_t nvt_ts_probe(struct i2c_client *client, const struct i2c_device_i
 			disable_irq_nosync(client->irq);
 			NVT_LOG("request irq %d succeed\n", client->irq);
 		}
+	}
+
+	ret = nvt_get_lockdown_info(ts->lockdown_info);
+
+	if (ret < 0)
+		NVT_ERR("can't get lockdown info");
+	else {
+		NVT_ERR("Lockdown:0x%02x,0x%02x,0x%02x,0x%02x,0x%02x,0x%02x,0x%02x,0x%02x\n",
+			ts->lockdown_info[0], ts->lockdown_info[1], ts->lockdown_info[2], ts->lockdown_info[3],
+			ts->lockdown_info[4], ts->lockdown_info[5], ts->lockdown_info[6], ts->lockdown_info[7]);
 	}
 
 	ts->fw_name = nvt_get_config(ts);
@@ -2234,7 +2208,7 @@ Description:
 return:
 	Executive outcomes. 0---succeed.
 *******************************************************/
-static int32_t __always_inline nvt_ts_suspend(struct device *dev)
+static int32_t nvt_ts_suspend(struct device *dev)
 {
 	uint8_t buf[4] = {0};
 	int ret = 0;
@@ -2317,7 +2291,7 @@ Description:
 return:
 	Executive outcomes. 0---succeed.
 *******************************************************/
-static int32_t __always_inline nvt_ts_resume(struct device *dev)
+static int32_t nvt_ts_resume(struct device *dev)
 {
 	int ret = 0;
 
@@ -2431,7 +2405,7 @@ static int drm_notifier_callback(struct notifier_block *self, unsigned long even
 }
 
 #elif defined(CONFIG_FB)
-static int __always_inline fb_notifier_callback(struct notifier_block *self, unsigned long event, void *data)
+static int fb_notifier_callback(struct notifier_block *self, unsigned long event, void *data)
 {
 	struct fb_event *evdata = data;
 	int *blank;
@@ -2588,7 +2562,6 @@ static struct i2c_driver nvt_i2c_driver = {
 #ifdef CONFIG_OF
 		.of_match_table = nvt_match_table,
 #endif
-		.probe_type = PROBE_PREFER_ASYNCHRONOUS,
 	},
 };
 

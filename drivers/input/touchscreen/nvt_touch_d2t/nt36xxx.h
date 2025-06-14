@@ -32,7 +32,7 @@
 #define PINCTRL_STATE_SUSPEND		"pmx_ts_suspend"
 #define PINCTRL_STATE_RELEASE		"pmx_ts_release"
 #define NVT_COORDS_ARR_SIZE 2
-#define NVT_DEBUG 0
+#define NVT_DEBUG 1
 
 /*---GPIO number---*/
 #define NVTTOUCH_INT_PIN 943
@@ -53,7 +53,7 @@
 #if NVT_DEBUG
 #define NVT_LOG(fmt, args...)    pr_err("[%s] %s %d: " fmt, NVT_I2C_NAME, __func__, __LINE__, ##args)
 #else
-#define NVT_LOG(fmt, args...)    pr_debug("[%s] %s %d: " fmt, NVT_I2C_NAME, __func__, __LINE__, ##args)
+#define NVT_LOG(fmt, args...)    pr_info("[%s] %s %d: " fmt, NVT_I2C_NAME, __func__, __LINE__, ##args)
 #endif
 #define NVT_ERR(fmt, args...)    pr_err("[%s] %s %d: " fmt, NVT_I2C_NAME, __func__, __LINE__, ##args)
 
@@ -72,9 +72,9 @@ extern const uint16_t touch_key_array[TOUCH_KEY_NUM];
 #define TOUCH_FORCE_NUM 1000
 
 /*---Customerized func.---*/
-#define NVT_TOUCH_PROC 0
-#define NVT_TOUCH_EXT_PROC 0
-#define NVT_TOUCH_MP 0
+#define NVT_TOUCH_PROC 1
+#define NVT_TOUCH_EXT_PROC 1
+#define NVT_TOUCH_MP 1
 #define MT_PROTOCOL_B 1
 #define WAKEUP_GESTURE 1
 #if WAKEUP_GESTURE
